@@ -5,33 +5,32 @@ ifneq (,$(wildcard ./.env))
     export
 endif
 
+# Default application namespace if not specified
+NAMESPACE ?= default
+
+# Set the TLD for DNS resolution in Kubernetes, or set to localhost for local docker
+# TLD=localhost
+TLD=workshop.contrastdemo.com
+
+ifeq ($(NAMESPACE),default)
+    # If the namespace is default, set the domain to localhost
+    NAMESPACE_DOMAIN=$(TLD)
+    NAMESPACE_DOMAIN_ESCAPED=$(TLD)
+else
+    # If the namespace is not default, set the domain to the namespace
+    NAMESPACE_DOMAIN=$(NAMESPACE).$(TLD)
+	# Also set the CONTRAST__UNIQ__NAME to the name of the namespace
+	CONTRAST__UNIQ__NAME=$(NAMESPACE)
+	# TODO: Add a way to dynamically handle the Namespace Domain
+	# Periods (.) need to be escaped with a double backslash for aliasHost
+	NAMESPACE_DOMAIN_ESCAPED=$(NAMESPACE)\\.workshop\\.contrastdemo\\.com
+endif
+
 download-helm-dependencies:
 	@echo "Downloading Helm chart dependencies..."
 	@cd contrast-cargo-cats && helm dependency update
 	@echo "Helm chart dependencies downloaded successfully."
 
-deploy-contrast:
-	@echo "\nDeploying Contrast Agent Operator..."
-	kubectl apply -f https://github.com/Contrast-Security-OSS/agent-operator/releases/latest/download/install-prod.yaml
-	@echo "\nSetting Contrast Agent Operator Token..."
-	kubectl -n contrast-agent-operator delete secret default-agent-connection-secret --ignore-not-found
-	kubectl -n contrast-agent-operator create secret generic default-agent-connection-secret --from-literal=token=$(CONTRAST__AGENT__TOKEN)
-	@echo "\nApplying Contrast Agent Operator Configuration..."
-	kubectl apply -f contrast-agent-operator-config.yaml
-	kubectl set env -n contrast-agent-operator deployment/contrast-agent-operator CONTRAST_INITCONTAINER_MEMORY_LIMIT="256Mi"
-	echo ""
-
-setup-opensearch:
-	echo "\nSetting up OpenSearch"
-	@until curl --insecure -s -o /dev/null -w "%{http_code}" http://opensearch.localhost | grep -q "302"; do \
-        echo "Waiting for OpenSearch..."; \
-        sleep 5; \
-    done
-
-	curl --insecure  -X POST -H "Content-Type: multipart/form-data" -H "osd-xsrf: osd-fetch" "http://opensearch.localhost/api/saved_objects/_import?overwrite=true" -u admin:Contrast@123! --form file='@contrast-cargo-cats/opesearch_savedobjects.ndjson'
-	curl --insecure  -X POST -H 'Content-Type: application/json' -H 'osd-xsrf: osd-fetch' 'http://opensearch.localhost/api/opensearch-dashboards/settings' -u admin:Contrast@123! --data-raw '{"changes":{"defaultRoute":"/app/dashboards#/"}}'
-	sleep 5;
-	echo "OpenSearch setup complete."
 
 validate-env-vars:
 	@echo "Validating environment variables..."
@@ -99,24 +98,106 @@ build-contrastdatacollector:
 build-containers: build-dataservice build-webhookservice build-frontgateservice build-console-ui build-exploit-server build-imageservice build-labelservice build-docservice build-contrastdatacollector
 	@echo "\nBuilding containers complete."
 
-run-helm: build-containers 
+check-version-tag:
+ifndef TAG
+	echo "TAG is not set. Please specify a TAG version in the format TAG=v1"
+	exit 1
+endif
+
+buildx-dataservice: check-version-tag
+	@echo "Building dataservice..."
+	cd services/dataservice && \
+	docker buildx build --push \
+		--platform linux/amd64,linux/arm64 \
+		--tag 771960604435.dkr.ecr.eu-west-1.amazonaws.com/workshop-images/dataservice:$(TAG) .
+
+buildx-webhookservice: check-version-tag
+	@echo "Building webhookservice..."
+	cd services/webhookservice && \
+	docker buildx build --push \
+		--platform linux/amd64,linux/arm64 \
+		--tag 771960604435.dkr.ecr.eu-west-1.amazonaws.com/workshop-images/webhookservice:$(TAG) .
+
+buildx-frontgateservice: check-version-tag
+	@echo "Building frontgateservice..."
+	cd services/frontgateservice && \
+	docker buildx build --push \
+		--platform linux/amd64,linux/arm64 \
+		--tag 771960604435.dkr.ecr.eu-west-1.amazonaws.com/workshop-images/frontgateservice:$(TAG) .
+
+buildx-console-ui: check-version-tag
+	@echo "Building console-ui..."
+	cd services/console-ui && \
+	docker buildx build --push \
+		--platform linux/amd64,linux/arm64 \
+		--tag 771960604435.dkr.ecr.eu-west-1.amazonaws.com/workshop-images/console-ui:$(TAG) .
+
+buildx-exploit-server: check-version-tag
+	@echo "Building exploit-server..."
+	cd services/exploit-server && \
+	docker buildx build --push \
+		--platform linux/amd64,linux/arm64 \
+		--tag 771960604435.dkr.ecr.eu-west-1.amazonaws.com/workshop-images/exploit-server:$(TAG) .
+
+buildx-imageservice: check-version-tag
+	@echo "Building imageservice..."
+	cd services/imageservice && \
+	docker buildx build --push \
+		--platform linux/amd64,linux/arm64 \
+		--tag 771960604435.dkr.ecr.eu-west-1.amazonaws.com/workshop-images/imageservice:$(TAG) .
+
+buildx-labelservice: check-version-tag
+	@echo "Building labelservice..."
+	cd services/labelservice && \
+	docker buildx build --push \
+		--platform linux/amd64,linux/arm64 \
+		--tag 771960604435.dkr.ecr.eu-west-1.amazonaws.com/workshop-images/labelservice:$(TAG) .
+
+buildx-docservice: check-version-tag
+	@echo "Building docservice..."
+	cd services/docservice && \
+	docker buildx build --push \
+		--platform linux/amd64,linux/arm64 \
+		--tag 771960604435.dkr.ecr.eu-west-1.amazonaws.com/workshop-images/docservice:$(TAG) .
+
+buildx-contrastdatacollector: check-version-tag
+	@echo "Building contrastdatacollector..."
+	cd services/contrastdatacollector && \
+	docker buildx build --push \
+		--platform linux/amd64,linux/arm64 \
+		--tag 771960604435.dkr.ecr.eu-west-1.amazonaws.com/workshop-images/contrastdatacollector:$(TAG) .
+
+aws-eks-auth:
+	@echo "Authenticating with AWS EKS..."
+	aws sso login
+	aws ecr get-login-password --region eu-west-1 | docker login --username AWS --password-stdin 771960604435.dkr.ecr.eu-west-1.amazonaws.com
+	@echo "AWS EKS authentication complete."
+
+buildx-containers: aws-eks-auth check-version-tag buildx-dataservice buildx-webhookservice buildx-frontgateservice buildx-console-ui buildx-exploit-server buildx-imageservice buildx-labelservice buildx-docservice buildx-contrastdatacollector
+	@echo "\nBuilding x-platform images complete."
+
+
+# TODO: Use the CONTRAST_UNIQ_NAME for both the application name and the namespace 
+run-helm: 
 	echo ""
-	@echo "Deploying cluster..."
-	helm upgrade --install contrast-cargo-cats  ./contrast-cargo-cats   --cleanup-on-fail \
+	@echo "Deploying cargo-cats to namespace: $(NAMESPACE)..."
+	helm upgrade --install contrast-cargo-cats ./contrast-cargo-cats --cleanup-on-fail \
+		--namespace $(NAMESPACE) --create-namespace \
 		--set contrast.uniqName=$(CONTRAST__UNIQ__NAME)
 
-deploy-simulation-console: build-console-ui build-contrastdatacollector
+deploy-simulation-console: validate-env-vars
 	@echo "Waiting for ingress controller to be ready..."
-	@until kubectl get deployment contrast-cargo-cats-ingress-nginx-controller -o jsonpath='{.status.readyReplicas}' 2>/dev/null | grep -q "1"; do \
+	@until kubectl get deployment --namespace kube-system ingress-nginx-controller -o jsonpath='{.status.readyReplicas}' 2>/dev/null | grep -q "1"; do \
 		echo "Waiting for ingress controller..."; \
 		sleep 5; \
 	done
 	@echo "Getting ingress controller IP..."
-	$(eval INGRESS_IP := $(shell kubectl get service contrast-cargo-cats-ingress-nginx-controller -o jsonpath='{.spec.clusterIP}' 2>/dev/null))
+# 	$(eval INGRESS_IP := $(shell kubectl get service ingress-nginx-controller -n kube-system -o jsonpath='{.spec.clusterIP}' 2>/dev/null))
 	@echo "Ingress controller IP: $(INGRESS_IP)"
 	@echo "Deploying simulation console..."
 	helm upgrade --install simulation-console ./simulation-console --cleanup-on-fail \
-		--set-string aliashost.cargocats\\.localhost=$(INGRESS_IP) \
+		--namespace $(NAMESPACE) \
+		--create-namespace \
 		--set contrastdatacollector.contrastUniqName=$(CONTRAST__UNIQ__NAME) \
 		--set contrastdatacollector.contrastApiToken=$(CONTRAST__AGENT__TOKEN) \
 		--set contrastdatacollector.contrastApiKey=$(CONTRAST__API__KEY) \
@@ -125,22 +206,26 @@ deploy-simulation-console: build-console-ui build-contrastdatacollector
 		--set consoleui.contrastUniqName=$(CONTRAST__UNIQ__NAME) \
 		--set consoleui.contrastApiKey=$(CONTRAST__API__KEY) \
 		--set consoleui.contrastApiAuthorization=$(CONTRAST__API__AUTHORIZATION)
+		--set consoleui.workshopNamespace=$(NAMESPACE) \
 	echo ""
+
+
+# 		--set-string aliashost.cargocats\\.$(NAMESPACE_DOMAIN_ESCAPED)=$(INGRESS_IP) \
 	
-deploy: validate-env-vars deploy-contrast download-helm-dependencies run-helm setup-opensearch deploy-simulation-console
+print-deployment:
 	$(eval contrast_url := $(shell echo "$(CONTRAST__AGENT__TOKEN)" | base64 --decode | grep -o '"url"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*: *"\(.*\)"/\1/' | sed 's/-agents//g'))
 	echo "\n\nDeployment complete!"
 	echo "=================================================================="
 	echo "Note: It may take a few minutes for the deployment to be fully ready."
 	echo "==================================================================\n"
 	echo ""
-	echo "Simulation Console: http://console.localhost"
+	echo "Simulation Console: http://console.$(NAMESPACE_DOMAIN)"
 	echo ""
-	echo "Vuln App: http://cargocats.localhost"
+	echo "Vuln App: http://cargocats.$(NAMESPACE_DOMAIN)"
 	echo "  Username: admin"
 	echo "  Password: password123"
 	echo ""
-	echo "OpenSearch Dashboard: http://opensearch.localhost"
+	echo "OpenSearch Dashboard: http://opensearch.$(TLD)"
 	echo "  Username: admin"
 	echo "  Password: Contrast@123!"
 	echo ""
@@ -148,8 +233,29 @@ deploy: validate-env-vars deploy-contrast download-helm-dependencies run-helm se
 	echo "==================================================================\n"
 	echo ""
 
-uninstall: 
-	helm uninstall contrast-cargo-cats; helm uninstall simulation-console; kubectl delete namespace contrast-agent-operator;
+
+update-builds: download-helm-dependencies build-containers
+	@echo "\nUpdated docker builds and helm dependencies to latest. You can now deploy the application using 'make demo-up'."
+
+demo-up: run-helm deploy-simulation-console print-deployment 
+# 	@echo "\nDemo deployment complete! You can now access the application."
+
+demo-down: 
+	@echo "Deleting the Contrast CargoCats deployment..."
+	@if [ "$(NAMESPACE)" != "default" ]; then \
+		helm uninstall --namespace $(NAMESPACE) contrast-cargo-cats; helm uninstall --namespace $(NAMESPACE) simulation-console; \
+	else \
+		echo "No custom namespace to delete. Deleting resources separately..."; \
+		helm uninstall contrast-cargo-cats; helm uninstall simulation-console; \
+	fi
+	@echo "\nDemo deployment tear down complete!"
+
+install: update-builds demo-up
+
+
+uninstall: demo-down
+	@echo "Deleting the Contrast Agent Operator..."
+	kubectl delete namespace contrast-agent-operator;
 
 redeploy: uninstall deploy
 	@echo "Redeployment complete!"

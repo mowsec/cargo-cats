@@ -1,12 +1,11 @@
 ---
-
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: '{{.Release.Name}}-{{ .Values.docservice.name }}'
   namespace: {{ .Release.Namespace }}
   labels:
-    contrast-agent: flex
+    contrast-agent: {{ .Values.docservice.agentType }}
 spec:
   selector:
     matchLabels:
@@ -22,7 +21,7 @@ spec:
       containers:
         - name: {{ .Values.docservice.name }}
           image: {{ .Values.docservice.image }} 
-          imagePullPolicy: Never
+          imagePullPolicy: IfNotPresent
           env:
           - name: CONTRAST__APPLICATION__NAME
             value: '{{ .Values.contrast.uniqName }}-{{.Release.Name}}-{{ .Values.docservice.name }}'
@@ -43,14 +42,12 @@ spec:
               memory: "512Mi"
               cpu: "300m"
               ephemeral-storage: "1Gi"
-
 ---
-
 apiVersion: v1
 kind: Service
 metadata:
   name: {{ .Values.docservice.name }}
-  namespace: default
+  namespace: {{ .Release.Namespace }}
 spec:
   selector:
     app: {{ .Values.docservice.name }}
@@ -59,5 +56,3 @@ spec:
       protocol: TCP
       port: 5000           
       targetPort: 5000     
-
----
